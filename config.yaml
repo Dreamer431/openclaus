@@ -1,0 +1,15 @@
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY"
+  model: "gemini-2.5-flash"
+
+evolution:
+  max_generations: 50
+  delay_between_generations: 5   # seconds between generations
+  hot_deploy_timeout: 30         # seconds to wait for new process
+
+safety:
+  max_backups: 20
+  protected_files:
+    - bootstrap.py
+    - config.yaml
+    - requirements.txt
