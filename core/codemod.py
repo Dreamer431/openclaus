@@ -106,24 +106,67 @@ def git_rollback(project_root: str) -> bool:
 def parse_gemini_response(response_text: str) -> dict[str, str]:
     """
     Parse Gemini's response into {rel_path: file_contents}.
-    Expects format:
+    Uses a line-by-line state machine instead of regex to correctly handle
+    code that contains triple-quoted strings or markdown fences internally.
+
+    Supported file header formats:
         ### FILE: core/filename.py
-        ```python
-        ...code...
-        ```
+        ## core/filename.py
+        **core/filename.py**
+        `core/filename.py`
     """
+    _HEADER_PATTERNS = [
+        re.compile(r"###?\s+FILE:\s*(core/[\w./]+\.py)"),
+        re.compile(r"###?\s+(core/[\w./]+\.py)"),
+        re.compile(r"\*\*(core/[\w./]+\.py)\*\*"),
+        re.compile(r"`(core/[\w./]+\.py)`"),
+    ]
+
     result = {}
-    pattern = re.compile(
-        r"### FILE:\s*(core/\S+\.py)\s*\n```(?:python)?\n(.*?)```",
-        re.DOTALL,
-    )
-    for match in pattern.finditer(response_text):
-        rel_path = match.group(1).strip()
-        content = match.group(2)
-        # Basic validation: must be parseable Python
-        try:
-            ast.parse(content)
-            result[rel_path] = content
-        except SyntaxError as e:
-            print(f"[CODEMOD] Skipping {rel_path}: syntax error - {e}")
+    lines = response_text.splitlines()
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        current_file = None
+        for pat in _HEADER_PATTERNS:
+            m = pat.search(line)
+            if m:
+                current_file = m.group(1).strip()
+                break
+
+        if current_file:
+            i += 1
+            # Scan forward for the opening code fence
+            while i < len(lines) and not lines[i].lstrip().startswith("```"):
+                i += 1
+
+            if i >= len(lines):
+                break
+
+            i += 1  # skip opening fence
+            code_lines = []
+
+            # Collect until a closing fence at column 0
+            while i < len(lines):
+                if lines[i].rstrip() == "```":
+                    break
+                code_lines.append(lines[i])
+                i += 1
+
+            content = "\n".join(code_lines)
+            if not content.strip():
+                i += 1
+                continue
+
+            try:
+                ast.parse(content)
+                result[current_file] = content
+                print(f"[CODEMOD] Parsed {current_file} ({len(code_lines)} lines)")
+            except SyntaxError as e:
+                print(f"[CODEMOD] Skipping {current_file}: syntax error - {e}")
+
+        i += 1
+
     return result
