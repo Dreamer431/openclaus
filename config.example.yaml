@@ -1,9 +1,9 @@
 gemini:
   api_key: "YOUR_GEMINI_API_KEY"
-  model: "gemini-2.5-flash"
+  model: "gemini-3-flash-preview"
 
 evolution:
-  max_generations: 50
+  max_generations: 5
   delay_between_generations: 5   # seconds between generations
   hot_deploy_timeout: 30         # seconds to wait for new process
 

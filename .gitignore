@@ -3,5 +3,6 @@ __pycache__/
 *.pyo
 .env
 .evolve_ready
-logs/*.log
+logs/
 backups/
+config.yaml
