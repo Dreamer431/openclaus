@@ -25,8 +25,27 @@ if PROJECT_ROOT not in sys.path:
 def load_config() -> dict:
     import yaml
     config_path = os.path.join(PROJECT_ROOT, "config.yaml")
+    example_path = os.path.join(PROJECT_ROOT, "config.example.yaml")
+
+    if not os.path.exists(config_path):
+        if os.path.exists(example_path):
+            import shutil
+            shutil.copy(example_path, config_path)
+            print(f"[BOOTSTRAP] Created config.yaml from config.example.yaml")
+            print(f"[BOOTSTRAP] Please set your API key in config.yaml and restart.")
+            sys.exit(0)
+        else:
+            print("[BOOTSTRAP] ERROR: config.yaml not found. Create it from config.example.yaml.")
+            sys.exit(1)
+
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+
+    if cfg.get("gemini", {}).get("api_key", "").startswith("YOUR_"):
+        print("[BOOTSTRAP] ERROR: Please set your Gemini API key in config.yaml.")
+        sys.exit(1)
+
+    return cfg
 
 
 def ensure_git_repo() -> None:
