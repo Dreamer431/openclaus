@@ -40,11 +40,11 @@ def run(config: dict) -> None:
     state = _load_state()
     generation = state.get("generation", 0)
     history = state.get("history", [])
-    max_generations = evo_cfg.get("max_generations", 50)
+    max_generations = evo_cfg.get("max_generations", 0)  # 0 = infinite
 
     _log(f"OpenClaus starting at generation {generation}")
 
-    while generation < max_generations:
+    while max_generations == 0 or generation < max_generations:
         generation += 1
         _log(f"\n{'='*50}")
         _log(f"GENERATION {generation}")
@@ -61,7 +61,8 @@ def run(config: dict) -> None:
         # Step 3: Ask Gemini to generate improvements
         _log("Generating improvements with Gemini...")
         target_files = _extract_target_files(chosen_strategy, current_files)
-        _log(f"Sending {len(target_files)}/{len(current_files)} file(s) with full content to Gemini")
+        full_count = sum(1 for k, v in target_files.items() if v == current_files.get(k))
+        _log(f"Sending {full_count}/{len(current_files)} file(s) at full content (rest as summaries)")
         try:
             proposed_files = brain.generate_improvement(target_files, chosen_strategy, history)
         except Exception as e:
@@ -160,7 +161,7 @@ def run(config: dict) -> None:
         _save_state(generation, history)
         time.sleep(evo_cfg.get("delay_between_generations", 5))
 
-    _log(f"Reached max_generations ({max_generations}). Stopping.")
+    _log(f"Reached max_generations ({max_generations}). Stopping.") if max_generations > 0 else None
 
 
 def _perform_hot_deploy(

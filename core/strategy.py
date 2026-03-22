@@ -28,6 +28,7 @@ def get_strategy(generation: int, history: list) -> str:
     Choose a strategy, preferring those that succeeded recently.
     Weights strategies by the ratio of successes to failures in recent history.
     Blocks strategies that failed 3+ consecutive times recently.
+    Also enforces a cooldown: same strategy cannot be chosen more than 3 consecutive times.
     """
     # Group outcomes by strategy
     strat_history = defaultdict(list)
@@ -39,6 +40,12 @@ def get_strategy(generation: int, history: list) -> str:
     for strat, outcomes in strat_history.items():
         if len(outcomes) >= 3 and all(o != "deploying" for o in outcomes[-3:]):
             blocked.add(strat)
+
+    # Cooldown: block strategy used 3+ consecutive times (regardless of outcome)
+    if len(history) >= 3:
+        last_three = [e["strategy"] for e in history[-3:]]
+        if len(set(last_three)) == 1:
+            blocked.add(last_three[0])
 
     available = [s for s in STRATEGIES if s not in blocked]
     if not available:

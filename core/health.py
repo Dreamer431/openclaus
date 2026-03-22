@@ -142,6 +142,9 @@ def _check_tests() -> tuple[bool, str]:
     test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests")
     if not os.path.isdir(test_dir):
         return True, "No core/tests/ directory found, skipping"
+    test_files = [f for f in os.listdir(test_dir) if f.startswith("test_") and f.endswith(".py")]
+    if not test_files:
+        return True, "No test files in core/tests/, skipping"
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", test_dir, "-x", "-q", "--tb=short"],
