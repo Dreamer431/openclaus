@@ -4,6 +4,10 @@ This file is intentionally evolvable - improving these prompts is one
 of the most impactful things the AI can do to improve itself.
 """
 
+# Use a variable for the fence so this source file never contains a literal
+# four-backtick line, which would confuse the parser in codemod.py.
+_FENCE = chr(96) * 4  # ````
+
 
 def build_analysis_prompt(file_contents: dict[str, str]) -> str:
     files_text = _format_files(file_contents)
@@ -39,13 +43,13 @@ Produce the improved versions of the files that need changing.
 Output ONLY the modified files using this EXACT format for each file:
 
 ### FILE: core/filename.py
-````python
+{_FENCE}python
 # full file contents here
-````
+{_FENCE}
 
 RULES:
 - IMPORTANT: Use exactly four backticks (````) to open and close code fences, NOT three
-- Do NOT place bare triple backticks on their own line inside Python strings; use chr(96)*3 if needed
+- Do NOT place a line of four bare backticks inside Python strings; use chr(96)*4 to build the fence string at runtime if needed
 - Output the COMPLETE file contents, not just diffs or patches
 - Do NOT include bootstrap.py, config.yaml, or requirements.txt
 - Preserve the function signature core/evolve.py:run(config) - bootstrap depends on it
