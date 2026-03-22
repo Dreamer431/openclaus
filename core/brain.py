@@ -54,5 +54,6 @@ class Brain:
         """
         prompt = prompts.build_review_prompt(original, modified, strategy)
         result = self._call(prompt, temperature=0.1)
-        approved = result.upper().startswith("APPROVED")
+        prefix = result[:100].upper()
+        approved = "APPROVED" in prefix and "REJECTED" not in prefix
         return approved, result

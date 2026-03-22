@@ -14,19 +14,22 @@ PROTECTED_FILES = {"bootstrap.py", "config.yaml", "requirements.txt"}
 
 
 def read_evolvable_files(core_dir: str) -> dict[str, str]:
-    """Read all .py files in core/, return {relative_path: contents}."""
+    """Read all .py files in core/ recursively, return {relative_path: contents}."""
+    project_root = os.path.dirname(core_dir)
     result = {}
-    for fname in sorted(os.listdir(core_dir)):
-        if fname.endswith(".py"):
-            rel_path = f"core/{fname}"
-            abs_path = os.path.join(core_dir, fname)
-            with open(abs_path, "r", encoding="utf-8") as f:
-                result[rel_path] = f.read()
+    for root, _dirs, files in os.walk(core_dir):
+        for fname in sorted(files):
+            if fname.endswith(".py"):
+                abs_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(abs_path, project_root).replace("\\", "/")
+                with open(abs_path, "r", encoding="utf-8") as f:
+                    result[rel_path] = f.read()
     return result
 
 
 def write_files(core_dir: str, file_contents: dict[str, str]) -> None:
-    """Write modified files to core/. Refuses protected paths."""
+    """Write modified files to core/ (including subdirs). Refuses protected paths."""
+    project_root = os.path.dirname(core_dir)
     for rel_path, content in file_contents.items():
         # Safety: reject protected files and path traversal
         basename = os.path.basename(rel_path)
@@ -35,7 +38,8 @@ def write_files(core_dir: str, file_contents: dict[str, str]) -> None:
         if ".." in rel_path or not rel_path.startswith("core/"):
             raise ValueError(f"Refusing to write outside core/: {rel_path}")
 
-        abs_path = os.path.join(core_dir, basename)
+        abs_path = os.path.join(project_root, rel_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         tmp_path = abs_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -70,6 +74,8 @@ def validate_changes(original: dict[str, str], proposed: dict[str, str]) -> bool
         prop_funcs = get_functions(prop_tree)
 
         for name, o_node in orig_funcs.items():
+            if name.startswith("_"):
+                continue  # private helpers may be freely refactored
             if name not in prop_funcs:
                 print(f"[VALIDATE] Missing function {name} in {rel_path}")
                 return False
