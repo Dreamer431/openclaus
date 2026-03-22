@@ -216,6 +216,8 @@ safety:
 
 **测试驱动进化（TDD Scaffold）**：`health.py` 在 `core/tests/` 目录存在时自动运行 pytest。AI 可通过写测试文件这一进化策略逐步构建测试套件，被写入的测试将作为后续所有进化的约束门控。
 
+**Fitness Function（自演化）**：策略列表中包含两条 fitness 相关目标——让 AI 自己设计质量度量标准（记录到 history 的 `fitness` 字段），再用 fitness 数据改进策略选择权重。度量什么、怎么算由 AI 决定，而非人工规定。
+
 ---
 
 ## 已知限制
