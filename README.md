@@ -153,7 +153,7 @@ gemini:
   model: "gemini-2.5-flash"         # 使用的模型
 
 evolution:
-  max_generations: 0                # 运行代数上限（0 = 无限运行）
+  max_generations: 50               # 运行代数上限
   delay_between_generations: 5      # 每代之间的间隔（秒）
   hot_deploy_timeout: 30            # 等待新进程健康的超时（秒）
 

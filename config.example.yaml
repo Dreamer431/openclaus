@@ -3,7 +3,7 @@ gemini:
   model: "gemini-3-flash-preview"
 
 evolution:
-  max_generations: 0   # 0 = run indefinitely
+  max_generations: 50  # number of generations to run
   delay_between_generations: 5   # seconds between generations
   hot_deploy_timeout: 30         # seconds to wait for new process
 

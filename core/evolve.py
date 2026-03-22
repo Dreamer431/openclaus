@@ -40,11 +40,11 @@ def run(config: dict) -> None:
     state = _load_state()
     generation = state.get("generation", 0)
     history = state.get("history", [])
-    max_generations = evo_cfg.get("max_generations", 0)  # 0 = infinite
+    max_generations = evo_cfg.get("max_generations", 50)
 
     _log(f"OpenClaus starting at generation {generation}")
 
-    while max_generations == 0 or generation < max_generations:
+    while generation < max_generations:
         generation += 1
         _log(f"\n{'='*50}")
         _log(f"GENERATION {generation}")
@@ -161,7 +161,8 @@ def run(config: dict) -> None:
         _save_state(generation, history)
         time.sleep(evo_cfg.get("delay_between_generations", 5))
 
-    _log(f"Reached max_generations ({max_generations}). Stopping.") if max_generations > 0 else None
+    _log(f"Reached max_generations ({max_generations}). Stopping.")
+    sys.exit(0)
 
 
 def _perform_hot_deploy(
