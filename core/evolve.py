@@ -219,7 +219,7 @@ def _load_state() -> dict:
         state = json.load(f)
 
     stored_branch = state.get("branch", "")
-    if stored_branch and stored_branch != current_branch:
+    if stored_branch != current_branch:
         # Archive old branch's state, start fresh for this branch
         safe_name = stored_branch.replace("/", "_").replace("-", "_").replace(".", "_")
         archive_path = os.path.join(LOG_DIR, f"state_{safe_name}.json")
