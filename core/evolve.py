@@ -197,17 +197,46 @@ def _perform_hot_deploy(
     codemod.git_rollback(project_root)
 
 
+def _get_current_branch() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        return result.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def _load_state() -> dict:
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"generation": 0, "history": []}
+    current_branch = _get_current_branch()
+    fresh = {"generation": 0, "history": [], "branch": current_branch}
+
+    if not os.path.exists(STATE_FILE):
+        return fresh
+
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        state = json.load(f)
+
+    stored_branch = state.get("branch", "")
+    if stored_branch and stored_branch != current_branch:
+        # Archive old branch's state, start fresh for this branch
+        safe_name = stored_branch.replace("/", "_").replace("-", "_").replace(".", "_")
+        archive_path = os.path.join(LOG_DIR, f"state_{safe_name}.json")
+        with open(archive_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        _log(f"Archived state for '{stored_branch}' -> {os.path.basename(archive_path)}")
+        return fresh
+
+    state["branch"] = current_branch
+    return state
 
 
 def _save_state(generation: int, history: list) -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
+    branch = _get_current_branch()
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"generation": generation, "history": history}, f, indent=2)
+        json.dump({"generation": generation, "history": history, "branch": branch}, f, indent=2)
 
 
 def _append_history(history: list, generation: int, strategy: str, outcome: str) -> None:
