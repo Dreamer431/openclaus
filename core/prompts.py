@@ -8,6 +8,16 @@ of the most impactful things the AI can do to improve itself.
 # four-backtick line, which would confuse the parser in codemod.py.
 _FENCE = chr(96) * 4  # ````
 
+_OUTCOME_LABELS = {
+    "deploying": "DEPLOYED successfully",
+    "rejected": "REJECTED by reviewer",
+    "validation_failed": "FAILED signature validation",
+    "health_failed": "FAILED health checks",
+    "write_failed": "FAILED to write to disk",
+    "deploy_failed": "FAILED hot deploy",
+    "no_changes": "produced NO CHANGES",
+}
+
 
 def build_analysis_prompt(file_contents: dict[str, str]) -> str:
     files_text = _format_files(file_contents)
@@ -29,16 +39,32 @@ Be specific and actionable.
 """
 
 
-def build_improvement_prompt(file_contents: dict[str, str], strategy: str) -> str:
+def build_improvement_prompt(
+    file_contents: dict[str, str], strategy: str, history: list | None = None
+) -> str:
     files_text = _format_files(file_contents)
+    history_section = ""
+    if history:
+        history_section = f"\nRECENT HISTORY (learn from past attempts — avoid repeating failures):\n{_format_history(history)}\n"
+
+    # Detect if any files are summaries (contain "    ...") and add a note
+    has_summaries = any("    ..." in content for content in file_contents.values())
+    summary_note = ""
+    if has_summaries:
+        summary_note = """
+NOTE: Files marked with "    ..." are summaries showing only signatures and imports.
+Focus your changes on the file(s) with full content shown.
+You may reference summaries to understand interfaces, but do NOT output modified versions of summary-only files.
+"""
+
     return f"""You are an AI that modifies its own source code to improve itself.
 Your current source files are below. Your task for this generation is:
 
 STRATEGY: {strategy}
-
+{history_section}
 CURRENT FILES:
 {files_text}
-
+{summary_note}
 Produce the improved versions of the files that need changing.
 Output ONLY the modified files using this EXACT format for each file:
 
@@ -99,3 +125,17 @@ def _format_files(file_contents: dict[str, str]) -> str:
     for path, content in file_contents.items():
         parts.append(f"--- {path} ---\n{content}")
     return "\n\n".join(parts)
+
+
+def _format_history(history: list, limit: int = 10) -> str:
+    recent = history[-limit:]
+    lines = []
+    for entry in recent:
+        gen = entry.get("generation", "?")
+        strat = entry.get("strategy", "")
+        outcome = entry.get("outcome", "")
+        label = _OUTCOME_LABELS.get(outcome, outcome)
+        # Truncate long strategy text for readability
+        strat_short = strat[:80] + "..." if len(strat) > 80 else strat
+        lines.append(f"  gen-{gen}: \"{strat_short}\" → {label}")
+    return "\n".join(lines)

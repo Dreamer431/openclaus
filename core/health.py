@@ -20,6 +20,7 @@ def run_checks() -> bool:
         _check_syntax,
         _check_imports,
         _check_api_contracts,
+        _check_tests,
     ]
     for check in checks:
         try:
@@ -133,3 +134,23 @@ def _check_api_contracts() -> tuple[bool, str]:
         return False, f"core.health contract check failed: {e}"
 
     return True, "API contracts and signatures OK (core.evolve.run(config), core.health.run_checks())"
+
+
+def _check_tests() -> tuple[bool, str]:
+    """Run pytest on core/tests/ if the directory exists. Skip if absent."""
+    import subprocess
+    test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests")
+    if not os.path.isdir(test_dir):
+        return True, "No core/tests/ directory found, skipping"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", test_dir, "-x", "-q", "--tb=short"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode == 0:
+        last_line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "passed"
+        return True, f"Tests passed: {last_line}"
+    output = (result.stdout + result.stderr)[-500:]
+    return False, f"Tests failed:\n{output}"

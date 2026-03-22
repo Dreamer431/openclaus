@@ -17,6 +17,7 @@ STRATEGIES = [
     "In core/evolve.py: track generation timing and compute a running success rate; log a summary line every 5 generations showing success_rate, avg_duration_seconds, and total_deploys",
     "In core/strategy.py: implement an 'exploration' bonus where strategies that have never been tried or haven't been tried in a long time get a weight boost to ensure variety",
     "In core/prompts.py: improve build_review_prompt to add a checklist item that explicitly rejects changes that do not directly implement the stated strategy (e.g. adding logging when the strategy targets a different concern)",
+    "In core/tests/: create a new file core/tests/test_codemod.py with pytest tests that verify parse_gemini_response correctly parses 4-backtick and 3-backtick fenced code blocks, and that validate_changes catches signature mismatches",
 ]
 
 

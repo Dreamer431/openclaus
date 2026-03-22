@@ -4,7 +4,9 @@ Entry point: run(config) - called by bootstrap.py.
 This signature must never change.
 """
 
+import ast
 import os
+import re
 import sys
 import subprocess
 import time
@@ -58,8 +60,10 @@ def run(config: dict) -> None:
 
         # Step 3: Ask Gemini to generate improvements
         _log("Generating improvements with Gemini...")
+        target_files = _extract_target_files(chosen_strategy, current_files)
+        _log(f"Sending {len(target_files)}/{len(current_files)} file(s) with full content to Gemini")
         try:
-            proposed_files = brain.generate_improvement(current_files, chosen_strategy)
+            proposed_files = brain.generate_improvement(target_files, chosen_strategy, history)
         except Exception as e:
             _log(f"Code generation failed: {e}. Skipping generation.")
             time.sleep(evo_cfg.get("delay_between_generations", 5))
@@ -204,6 +208,56 @@ def _perform_hot_deploy(
     _log("Rolling back to previous version...")
     codemod.restore_backup(backup_path, CORE_DIR)
     codemod.git_rollback(project_root)
+
+
+def _extract_target_files(strategy: str, all_files: dict[str, str]) -> dict[str, str]:
+    """
+    Parse the target file from the strategy string.
+    Returns a dict with the target file's full content and summaries of all other files.
+    Falls back to returning all files if no target is found.
+    """
+    m = re.search(r"In (core/[\w.]+\.py)", strategy)
+    if not m or m.group(1) not in all_files:
+        return all_files  # safe fallback
+
+    target = m.group(1)
+    result = {}
+    for path, content in all_files.items():
+        if path == target:
+            result[path] = content
+        else:
+            result[path] = _summarize_file(content)
+    return result
+
+
+def _summarize_file(content: str) -> str:
+    """
+    Generate a brief signature-only summary of a Python file.
+    Includes imports and function/class signatures with '...' bodies.
+    Used to give the AI interface context without full source.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return content  # return full content if unparseable
+
+    src_lines = content.splitlines()
+    lines = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            seg = ast.get_source_segment(content, node)
+            if seg:
+                lines.append(seg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            lines.append(src_lines[node.lineno - 1])
+            lines.append("    ...")
+        elif isinstance(node, ast.ClassDef):
+            lines.append(f"class {node.name}:")
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    lines.append("    " + src_lines[item.lineno - 1].lstrip())
+                    lines.append("        ...")
+    return "\n".join(lines)
 
 
 def _get_current_branch() -> str:

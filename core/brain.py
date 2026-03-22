@@ -32,13 +32,13 @@ class Brain:
         return self._call(prompt, temperature=0.2)
 
     def generate_improvement(
-        self, file_contents: dict[str, str], strategy: str
+        self, file_contents: dict[str, str], strategy: str, history: list | None = None
     ) -> dict[str, str]:
         """
         Ask Gemini to produce improved files based on the strategy.
         Returns {rel_path: new_content} for files that should change.
         """
-        prompt = prompts.build_improvement_prompt(file_contents, strategy)
+        prompt = prompts.build_improvement_prompt(file_contents, strategy, history)
         raw = self._call(prompt, temperature=0.4)
         return parse_gemini_response(raw)
 
