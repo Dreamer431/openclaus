@@ -42,6 +42,76 @@ def write_files(core_dir: str, file_contents: dict[str, str]) -> None:
         os.replace(tmp_path, abs_path)
 
 
+def validate_changes(original: dict[str, str], proposed: dict[str, str]) -> bool:
+    """
+    Verify that proposed changes do not break existing top-level function signatures.
+    Checks names, argument structure, and type annotations.
+    Returns True if valid, False otherwise.
+    """
+    for rel_path, prop_content in proposed.items():
+        if rel_path not in original:
+            continue
+
+        try:
+            orig_tree = ast.parse(original[rel_path])
+            prop_tree = ast.parse(prop_content)
+        except Exception as e:
+            print(f"[VALIDATE] Syntax error in proposed {rel_path}: {e}")
+            return False
+
+        def get_functions(tree):
+            return {
+                n.name: n
+                for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+
+        orig_funcs = get_functions(orig_tree)
+        prop_funcs = get_functions(prop_tree)
+
+        for name, o_node in orig_funcs.items():
+            if name not in prop_funcs:
+                print(f"[VALIDATE] Missing function {name} in {rel_path}")
+                return False
+
+            p_node = prop_funcs[name]
+
+            # Ensure sync/async status is preserved
+            if type(o_node) is not type(p_node):
+                print(f"[VALIDATE] Sync/Async mismatch in {rel_path}:{name}")
+                return False
+
+            # Check return annotation
+            o_ret = ast.dump(o_node.returns) if o_node.returns else None
+            p_ret = ast.dump(p_node.returns) if p_node.returns else None
+            if o_ret != p_ret:
+                print(f"[VALIDATE] Return annotation mismatch in {rel_path}:{name}")
+                return False
+
+            o_args = o_node.args
+            p_args = p_node.args
+
+            def extract_arg_data(args_obj):
+                def ann(node):
+                    return ast.dump(node) if node else None
+
+                return {
+                    "posonly": [(a.arg, ann(a.annotation)) for a in getattr(args_obj, "posonlyargs", [])],
+                    "args": [(a.arg, ann(a.annotation)) for a in args_obj.args],
+                    "vararg": (args_obj.vararg.arg, ann(args_obj.vararg.annotation)) if args_obj.vararg else None,
+                    "kwonly": [(a.arg, ann(a.annotation)) for a in args_obj.kwonlyargs],
+                    "kwarg": (args_obj.kwarg.arg, ann(args_obj.kwarg.annotation)) if args_obj.kwarg else None,
+                    "defaults_count": len(args_obj.defaults),
+                    "kw_defaults_count": len([d for d in args_obj.kw_defaults if d is not None]),
+                }
+
+            if extract_arg_data(o_args) != extract_arg_data(p_args):
+                print(f"[VALIDATE] Signature mismatch in {rel_path}:{name}")
+                return False
+
+    return True
+
+
 def backup_current(core_dir: str, backup_dir: str, generation: int) -> str:
     """Copy core/ to backups/gen_NNN_TIMESTAMP/. Return backup path."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

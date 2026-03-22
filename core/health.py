@@ -6,6 +6,7 @@ The run_checks() signature must never change - bootstrap.py depends on it.
 
 import ast
 import importlib
+import inspect
 import os
 import sys
 
@@ -36,7 +37,7 @@ def run_checks() -> bool:
 
 def _check_syntax() -> tuple[bool, str]:
     """Verify all core/*.py files parse as valid Python."""
-    core_dir = os.path.join(os.path.dirname(__file__))
+    core_dir = os.path.dirname(os.path.abspath(__file__))
     for fname in os.listdir(core_dir):
         if not fname.endswith(".py"):
             continue
@@ -52,7 +53,14 @@ def _check_syntax() -> tuple[bool, str]:
 
 def _check_imports() -> tuple[bool, str]:
     """Verify all core modules can be imported without crashing."""
-    modules = ["core.prompts", "core.codemod", "core.health", "core.strategy", "core.brain"]
+    modules = [
+        "core.prompts",
+        "core.codemod",
+        "core.health",
+        "core.strategy",
+        "core.brain",
+        "core.evolve",
+    ]
     for mod_name in modules:
         # Force reimport to get the latest version from disk
         if mod_name in sys.modules:
@@ -65,19 +73,63 @@ def _check_imports() -> tuple[bool, str]:
 
 
 def _check_api_contracts() -> tuple[bool, str]:
-    """Verify the critical API contracts that bootstrap.py depends on."""
-    # Check core.evolve.run is callable
-    if "core.evolve" in sys.modules:
-        del sys.modules["core.evolve"]
+    """
+    Verify the critical API contracts that bootstrap.py depends on.
+    Checks both callability and function signatures for core/evolve.py and core/health.py.
+    This ensures that the evolution process can always restart and verify itself.
+    """
+    # 1. Check core.evolve.run(config)
     try:
+        if "core.evolve" in sys.modules:
+            del sys.modules["core.evolve"]
         import core.evolve as evolve_mod
-        if not callable(getattr(evolve_mod, "run", None)):
+
+        if not hasattr(evolve_mod, "run"):
+            return False, "core.evolve.run is missing"
+
+        run_fn = evolve_mod.run
+        if not callable(run_fn):
             return False, "core.evolve.run is not callable"
+
+        sig = inspect.signature(run_fn)
+        params = list(sig.parameters.values())
+
+        # bootstrap.py expects run(config)
+        if len(params) != 1:
+            return False, f"core.evolve.run signature mismatch: expected 1 arg, got {len(params)}"
+
+        # Ensure it's not a keyword-only argument that would break positional call
+        if params[0].kind == inspect.Parameter.KEYWORD_ONLY:
+            return False, "core.evolve.run argument 'config' cannot be keyword-only"
+
     except Exception as e:
-        return False, f"core.evolve failed to load: {e}"
+        return False, f"core.evolve contract check failed: {e}"
 
-    # Check core.health.run_checks is callable (self-referential but correct)
-    if not callable(run_checks):
-        return False, "core.health.run_checks is not callable"
+    # 2. Check core.health.run_checks()
+    try:
+        if "core.health" in sys.modules:
+            del sys.modules["core.health"]
+        import core.health as health_mod
 
-    return True, "API contracts OK (run, run_checks)"
+        if not hasattr(health_mod, "run_checks"):
+            return False, "core.health.run_checks is missing"
+
+        run_hc_fn = health_mod.run_checks
+        if not callable(run_hc_fn):
+            return False, "core.health.run_checks is not callable"
+
+        sig = inspect.signature(run_hc_fn)
+        params = list(sig.parameters.values())
+
+        # bootstrap.py expects run_checks() with no arguments
+        if len(params) != 0:
+            return False, f"core.health.run_checks signature mismatch: expected 0 args, got {len(params)}"
+
+        # Verify return type annotation if present (bootstrap expects bool)
+        if sig.return_annotation not in (inspect.Signature.empty, bool):
+            return False, f"core.health.run_checks return type mismatch: expected bool, got {sig.return_annotation}"
+
+    except Exception as e:
+        return False, f"core.health contract check failed: {e}"
+
+    return True, "API contracts and signatures OK (core.evolve.run(config), core.health.run_checks())"

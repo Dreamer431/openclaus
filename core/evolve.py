@@ -94,6 +94,15 @@ def run(config: dict) -> None:
             time.sleep(evo_cfg.get("delay_between_generations", 5))
             continue
 
+        # Step 4.5: Validate function signatures
+        _log("Validating function signatures...")
+        if not codemod.validate_changes(current_files, proposed_files):
+            _log("Signature validation FAILED. Skipping generation.")
+            _append_history(history, generation, chosen_strategy, "validation_failed")
+            _save_state(generation, history)
+            time.sleep(evo_cfg.get("delay_between_generations", 5))
+            continue
+
         # Step 5: Backup current core/
         backup_path = codemod.backup_current(CORE_DIR, BACKUP_DIR, generation)
         _log(f"Backup saved to {backup_path}")
