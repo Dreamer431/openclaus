@@ -4,24 +4,38 @@ Decides what the AI should try to improve each generation.
 The AI can evolve this module to develop smarter strategy selection over time.
 """
 
-# Initial strategy rotation - cycles through these in order
+# Strategies are specific and verifiable - each names a target file and exact change.
+# Avoid vague goals (e.g. "improve robustness") that let the AI substitute safe but
+# low-value changes like adding try/except or logging.
 STRATEGIES = [
-    "Improve the prompt templates in core/prompts.py to produce more reliable code generation",
-    "Add better error handling and logging throughout core/ modules",
-    "Improve the parse_gemini_response function in core/codemod.py to handle more response formats",
-    "Improve the health checks in core/health.py to catch more potential issues",
-    "Refactor core/evolve.py for clarity and robustness",
-    "Improve the review prompt to catch more types of bugs before they are applied",
-    "Add a fitness tracking mechanism to measure improvement across generations",
-    "Improve error messages and logging to make debugging easier",
+    "In core/prompts.py: improve build_improvement_prompt to include a concrete example of a good change vs a bad change, so the AI produces higher-quality improvements",
+    "In core/codemod.py: add a validate_changes(original, proposed) function that checks proposed files preserve all existing top-level function signatures from the original",
+    "In core/health.py: add a check that verifies all functions declared in core/evolve.py and core/health.py that bootstrap.py depends on are still callable with the correct signatures",
+    "In core/evolve.py: track generation timing and compute a running success rate; log a summary line every 5 generations showing success_rate, avg_duration_seconds, and total_deploys",
+    "In core/strategy.py: make get_strategy prefer strategies that succeeded recently - weight strategies by inverse of their recent failure count rather than pure round-robin",
+    "In core/prompts.py: improve build_review_prompt to add a checklist item that explicitly rejects changes that do not directly implement the stated strategy (e.g. adding logging when the strategy targets a different concern)",
 ]
 
 
 def get_strategy(generation: int, history: list) -> str:
     """
-    Choose a strategy for the given generation.
-    Initially rotates through the STRATEGIES list.
-    Future versions of this function may use history to make smarter choices.
+    Choose a strategy, skipping those that failed 3+ consecutive times recently.
+    Falls back to full rotation if all strategies are blocked.
     """
-    index = (generation - 1) % len(STRATEGIES)
-    return STRATEGIES[index]
+    from collections import defaultdict
+
+    strat_outcomes: dict[str, list[str]] = defaultdict(list)
+    for entry in history:
+        strat_outcomes[entry["strategy"]].append(entry["outcome"])
+
+    blocked = {
+        strat
+        for strat, outcomes in strat_outcomes.items()
+        if len(outcomes) >= 3 and all(o != "deploying" for o in outcomes[-3:])
+    }
+
+    available = [s for s in STRATEGIES if s not in blocked]
+    if not available:
+        available = list(STRATEGIES)  # unblock all to avoid deadlock
+
+    return available[(generation - 1) % len(available)]

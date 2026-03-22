@@ -103,43 +103,30 @@ def git_rollback(project_root: str) -> bool:
         return False
 
 
-def parse_gemini_response(response_text: str) -> dict[str, str]:
-    """
-    Parse Gemini's response into {rel_path: file_contents}.
-    Uses a line-by-line state machine instead of regex to correctly handle
-    code that contains triple-quoted strings or markdown fences internally.
+_HEADER_PATTERNS = [
+    re.compile(r"###?\s+FILE:\s*(core/[\w./]+\.py)"),
+    re.compile(r"###?\s+(core/[\w./]+\.py)"),
+    re.compile(r"\*\*(core/[\w./]+\.py)\*\*"),
+    re.compile(r"`(core/[\w./]+\.py)`"),
+]
 
-    Supported file header formats:
-        ### FILE: core/filename.py
-        ## core/filename.py
-        **core/filename.py**
-        `core/filename.py`
-    """
-    _HEADER_PATTERNS = [
-        re.compile(r"###?\s+FILE:\s*(core/[\w./]+\.py)"),
-        re.compile(r"###?\s+(core/[\w./]+\.py)"),
-        re.compile(r"\*\*(core/[\w./]+\.py)\*\*"),
-        re.compile(r"`(core/[\w./]+\.py)`"),
-    ]
 
+def _parse_with_fence(lines: list[str], open_prefix: str, close_val: str) -> dict[str, str]:
+    """Inner parser for a specific fence style."""
     result = {}
-    lines = response_text.splitlines()
     i = 0
 
     while i < len(lines):
-        line = lines[i]
-
         current_file = None
         for pat in _HEADER_PATTERNS:
-            m = pat.search(line)
+            m = pat.search(lines[i])
             if m:
                 current_file = m.group(1).strip()
                 break
 
         if current_file:
             i += 1
-            # Scan forward for the opening code fence
-            while i < len(lines) and not lines[i].lstrip().startswith("```"):
+            while i < len(lines) and not lines[i].lstrip().startswith(open_prefix):
                 i += 1
 
             if i >= len(lines):
@@ -148,9 +135,8 @@ def parse_gemini_response(response_text: str) -> dict[str, str]:
             i += 1  # skip opening fence
             code_lines = []
 
-            # Collect until a closing fence at column 0
             while i < len(lines):
-                if lines[i].rstrip() == "```":
+                if lines[i].rstrip() == close_val:
                     break
                 code_lines.append(lines[i])
                 i += 1
@@ -170,3 +156,18 @@ def parse_gemini_response(response_text: str) -> dict[str, str]:
         i += 1
 
     return result
+
+
+def parse_gemini_response(response_text: str) -> dict[str, str]:
+    """
+    Parse Gemini's response into {rel_path: file_contents}.
+    Tries 4-backtick fences first (avoids collision with triple-backtick strings
+    in generated code), then falls back to 3-backtick fences.
+    """
+    lines = response_text.splitlines()
+
+    result = _parse_with_fence(lines, open_prefix="````", close_val="````")
+    if result:
+        return result
+
+    return _parse_with_fence(lines, open_prefix="```", close_val="```")

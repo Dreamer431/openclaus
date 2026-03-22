@@ -21,7 +21,7 @@ class Brain:
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=temperature,
-                max_output_tokens=8192,
+                max_output_tokens=65536,
             ),
         )
         return response.text

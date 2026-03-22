@@ -39,11 +39,13 @@ Produce the improved versions of the files that need changing.
 Output ONLY the modified files using this EXACT format for each file:
 
 ### FILE: core/filename.py
-```python
+````python
 # full file contents here
-```
+````
 
 RULES:
+- IMPORTANT: Use exactly four backticks (````) to open and close code fences, NOT three
+- Do NOT place bare triple backticks on their own line inside Python strings; use chr(96)*3 if needed
 - Output the COMPLETE file contents, not just diffs or patches
 - Do NOT include bootstrap.py, config.yaml, or requirements.txt
 - Preserve the function signature core/evolve.py:run(config) - bootstrap depends on it
@@ -67,10 +69,14 @@ Check for:
 1. Syntax errors
 2. Broken imports
 3. Logic errors that could crash the system
-4. Whether the changes actually accomplish the stated strategy
-5. Whether core API contracts are preserved:
+4. Whether core API contracts are preserved:
    - core/evolve.py must have run(config) callable
    - core/health.py must have run_checks() callable
+5. Strategy alignment: Do the changes DIRECTLY implement the stated strategy?
+   REJECT if the changes are mostly unrelated to the strategy (e.g. adding error
+   handling or logging when the strategy asks for a different kind of change, or
+   adding docstrings when the strategy asks for new functionality). The diff must
+   address what the strategy explicitly describes.
 
 ORIGINAL FILES:
 {original_text}
