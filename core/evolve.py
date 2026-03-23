@@ -137,7 +137,8 @@ def run(config: dict) -> None:
 
         # Step 8: Git commit
         commit_msg = f"gen-{generation}: {chosen_strategy[:60]}"
-        if codemod.git_commit(PROJECT_ROOT, commit_msg):
+        committed = codemod.git_commit(PROJECT_ROOT, commit_msg)
+        if committed:
             _log(f"Git commit: {commit_msg}")
         else:
             _log("Git commit failed (continuing anyway)")
@@ -153,6 +154,7 @@ def run(config: dict) -> None:
             backup_path=backup_path,
             project_root=PROJECT_ROOT,
             timeout=evo_cfg.get("hot_deploy_timeout", 30),
+            committed=committed,
         )
 
         # If we reach here, hot deploy failed and we rolled back
@@ -166,7 +168,8 @@ def run(config: dict) -> None:
 
 
 def _perform_hot_deploy(
-    generation: int, backup_path: str, project_root: str, timeout: int
+    generation: int, backup_path: str, project_root: str, timeout: int,
+    committed: bool = False,
 ) -> None:
     """
     Spawn a new process with the updated code.
@@ -209,7 +212,8 @@ def _perform_hot_deploy(
     # Roll back files and git
     _log("Rolling back to previous version...")
     codemod.restore_backup(backup_path, CORE_DIR)
-    codemod.git_rollback(project_root)
+    if committed:
+        codemod.git_rollback(project_root)
 
 
 def _extract_target_files(strategy: str, all_files: dict[str, str]) -> dict[str, str]:

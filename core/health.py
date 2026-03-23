@@ -37,40 +37,49 @@ def run_checks() -> bool:
 
 
 def _check_syntax() -> tuple[bool, str]:
-    """Verify all core/*.py files parse as valid Python."""
+    """Verify all core/**/*.py files parse as valid Python."""
     core_dir = os.path.dirname(os.path.abspath(__file__))
-    for fname in os.listdir(core_dir):
-        if not fname.endswith(".py"):
-            continue
-        fpath = os.path.join(core_dir, fname)
-        with open(fpath, "r", encoding="utf-8") as f:
-            source = f.read()
-        try:
-            ast.parse(source)
-        except SyntaxError as e:
-            return False, f"Syntax error in core/{fname}: {e}"
-    return True, "All core/*.py files have valid syntax"
+    count = 0
+    for root, _dirs, files in os.walk(core_dir):
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            fpath = os.path.join(root, fname)
+            rel = os.path.relpath(fpath, core_dir)
+            with open(fpath, "r", encoding="utf-8") as f:
+                source = f.read()
+            try:
+                ast.parse(source)
+                count += 1
+            except SyntaxError as e:
+                return False, f"Syntax error in core/{rel}: {e}"
+    return True, f"All {count} core/**/*.py files have valid syntax"
 
 
 def _check_imports() -> tuple[bool, str]:
     """Verify all core modules can be imported without crashing."""
-    modules = [
-        "core.prompts",
-        "core.codemod",
-        "core.health",
-        "core.strategy",
-        "core.brain",
-        "core.evolve",
-    ]
+    core_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(core_dir)
+    modules = []
+    for root, _dirs, files in os.walk(core_dir):
+        if os.path.basename(root) == "tests":
+            continue
+        for fname in sorted(files):
+            if not fname.endswith(".py") or fname == "__init__.py":
+                continue
+            fpath = os.path.join(root, fname)
+            rel = os.path.relpath(fpath, project_root)
+            mod_name = rel.replace(os.sep, ".").replace("/", ".")[:-3]
+            modules.append(mod_name)
+
     for mod_name in modules:
-        # Force reimport to get the latest version from disk
         if mod_name in sys.modules:
             del sys.modules[mod_name]
         try:
             importlib.import_module(mod_name)
         except Exception as e:
             return False, f"Failed to import {mod_name}: {e}"
-    return True, "All core modules imported successfully"
+    return True, f"All {len(modules)} core modules imported successfully"
 
 
 def _check_api_contracts() -> tuple[bool, str]:

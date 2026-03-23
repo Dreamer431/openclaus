@@ -129,10 +129,8 @@ def backup_current(core_dir: str, backup_dir: str, generation: int) -> str:
 
 def restore_backup(backup_path: str, core_dir: str) -> None:
     """Restore core/ from a backup."""
-    for fname in os.listdir(backup_path):
-        src = os.path.join(backup_path, fname)
-        dst = os.path.join(core_dir, fname)
-        shutil.copy2(src, dst)
+    shutil.rmtree(core_dir)
+    shutil.copytree(backup_path, core_dir)
 
 
 def cleanup_old_backups(backup_dir: str, max_backups: int) -> None:
