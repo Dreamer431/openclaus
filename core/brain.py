@@ -15,6 +15,12 @@ class Brain:
         self.client = genai.Client(api_key=api_key)
         self.model = model
 
+    def close(self) -> None:
+        """Release SDK resources so the interpreter can exit cleanly."""
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
+
     def _call(self, prompt: str, temperature: float = 0.3) -> str:
         response = self.client.models.generate_content(
             model=self.model,

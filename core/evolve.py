@@ -37,144 +37,148 @@ def run(config: dict) -> None:
     safety_cfg = config["safety"]
 
     brain = Brain(api_key=gemini_cfg["api_key"], model=gemini_cfg["model"])
-    state = _load_state()
-    generation = state.get("generation", 0)
-    history = state.get("history", [])
-    max_generations = evo_cfg.get("max_generations", 50)
+    try:
+        state = _load_state()
+        generation = state.get("generation", 0)
+        history = state.get("history", [])
+        max_generations = evo_cfg.get("max_generations", 50)
 
-    _log(f"OpenClaus starting at generation {generation}")
+        _log(f"OpenClaus starting at generation {generation}")
 
-    while generation < max_generations:
-        generation += 1
-        _log(f"\n{'='*50}")
-        _log(f"GENERATION {generation}")
-        _log(f"{'='*50}")
+        while generation < max_generations:
+            generation += 1
+            _log(f"\n{'='*50}")
+            _log(f"GENERATION {generation}")
+            _log(f"{'='*50}")
 
-        # Step 1: Read current evolvable source files
-        current_files = codemod.read_evolvable_files(CORE_DIR)
-        _log(f"Read {len(current_files)} source files")
+            # Step 1: Read current evolvable source files
+            current_files = codemod.read_evolvable_files(CORE_DIR)
+            _log(f"Read {len(current_files)} source files")
 
-        # Step 2: Choose strategy for this generation
-        chosen_strategy = strategy_mod.get_strategy(generation, history)
-        _log(f"Strategy: {chosen_strategy}")
+            # Step 2: Choose strategy for this generation
+            chosen_strategy = strategy_mod.get_strategy(generation, history)
+            _log(f"Strategy: {chosen_strategy}")
 
-        # Step 3: Ask Gemini to generate improvements
-        _log("Generating improvements with Gemini...")
-        target_files = _extract_target_files(chosen_strategy, current_files)
-        full_count = sum(1 for k, v in target_files.items() if v == current_files.get(k))
-        _log(f"Sending {full_count}/{len(current_files)} file(s) at full content (rest as summaries)")
-        try:
-            proposed_files = brain.generate_improvement(target_files, chosen_strategy, history)
-        except Exception as e:
-            _log(f"Code generation failed: {e}. Skipping generation.")
-            time.sleep(evo_cfg.get("delay_between_generations", 5))
-            continue
+            # Step 3: Ask Gemini to generate improvements
+            _log("Generating improvements with Gemini...")
+            target_files = _extract_target_files(chosen_strategy, current_files)
+            full_count = sum(1 for k, v in target_files.items() if v == current_files.get(k))
+            _log(f"Sending {full_count}/{len(current_files)} file(s) at full content (rest as summaries)")
+            try:
+                proposed_files = brain.generate_improvement(target_files, chosen_strategy, history)
+            except Exception as e:
+                _log(f"Code generation failed: {e}. Skipping generation.")
+                time.sleep(evo_cfg.get("delay_between_generations", 5))
+                continue
 
-        if not proposed_files:
-            _log("Gemini returned no changes. Skipping generation.")
-            _append_history(history, generation, chosen_strategy, "no_changes")
+            if not proposed_files:
+                _log("Gemini returned no changes. Skipping generation.")
+                _append_history(history, generation, chosen_strategy, "no_changes")
+                _save_state(generation, history)
+                time.sleep(evo_cfg.get("delay_between_generations", 5))
+                continue
+
+            _log(f"Gemini proposed changes to: {list(proposed_files.keys())}")
+
+            # Step 4: Self-review the proposed changes
+            _log("Running self-review...")
+            try:
+                approved, reasoning = brain.review_changes(
+                    current_files, proposed_files, chosen_strategy
+                )
+            except Exception as e:
+                _log(f"Review failed: {e}. Skipping generation.")
+                time.sleep(evo_cfg.get("delay_between_generations", 5))
+                continue
+
+            _log(f"Review result: {'APPROVED' if approved else 'REJECTED'}")
+            _log(f"Reasoning: {reasoning[:200]}...")
+
+            if not approved:
+                _append_history(history, generation, chosen_strategy, "rejected")
+                _save_state(generation, history)
+                time.sleep(evo_cfg.get("delay_between_generations", 5))
+                continue
+
+            # Step 4.5: Validate function signatures
+            _log("Validating function signatures...")
+            if not codemod.validate_changes(current_files, proposed_files):
+                _log("Signature validation FAILED. Skipping generation.")
+                _append_history(history, generation, chosen_strategy, "validation_failed")
+                _save_state(generation, history)
+                time.sleep(evo_cfg.get("delay_between_generations", 5))
+                continue
+
+            # Step 5: Backup current core/
+            backup_path = codemod.backup_current(CORE_DIR, BACKUP_DIR, generation)
+            _log(f"Backup saved to {backup_path}")
+            codemod.cleanup_old_backups(BACKUP_DIR, safety_cfg.get("max_backups", 20))
+
+            # Step 6: Write proposed files to disk
+            try:
+                codemod.write_files(CORE_DIR, proposed_files)
+                _log("Changes written to disk")
+            except Exception as e:
+                _log(f"Write failed: {e}. Rolling back.")
+                codemod.restore_backup(backup_path, CORE_DIR)
+                _append_history(history, generation, chosen_strategy, "write_failed")
+                _save_state(generation, history)
+                continue
+
+            # Step 7: Health check the new code
+            _log("Running health checks...")
+            if not health.run_checks():
+                _log("Health checks FAILED. Rolling back.")
+                codemod.restore_backup(backup_path, CORE_DIR)
+                _append_history(history, generation, chosen_strategy, "health_failed")
+                _save_state(generation, history)
+                continue
+
+            _log("Health checks PASSED")
+
+            # Step 8: Git commit
+            commit_msg = f"gen-{generation}: {chosen_strategy[:60]}"
+            committed = codemod.git_commit(PROJECT_ROOT, commit_msg)
+            if committed:
+                _log(f"Git commit: {commit_msg}")
+            else:
+                _log("Git commit failed (continuing anyway)")
+
+            # Step 9: Save state before hot deploy
+            _append_history(history, generation, chosen_strategy, "deploying")
+            _save_state(generation, history)
+
+            # Step 10: Hot deploy - spawn new process with updated code
+            _log("Initiating hot deploy...")
+            if _perform_hot_deploy(
+                generation=generation,
+                backup_path=backup_path,
+                project_root=PROJECT_ROOT,
+                timeout=evo_cfg.get("hot_deploy_timeout", 30),
+                committed=committed,
+            ):
+                return
+
+            # If we reach here, hot deploy failed and we rolled back
+            _log("Hot deploy failed. Continuing with rolled-back code.")
+            _append_history(history, generation, chosen_strategy, "deploy_failed")
             _save_state(generation, history)
             time.sleep(evo_cfg.get("delay_between_generations", 5))
-            continue
 
-        _log(f"Gemini proposed changes to: {list(proposed_files.keys())}")
-
-        # Step 4: Self-review the proposed changes
-        _log("Running self-review...")
-        try:
-            approved, reasoning = brain.review_changes(
-                current_files, proposed_files, chosen_strategy
-            )
-        except Exception as e:
-            _log(f"Review failed: {e}. Skipping generation.")
-            time.sleep(evo_cfg.get("delay_between_generations", 5))
-            continue
-
-        _log(f"Review result: {'APPROVED' if approved else 'REJECTED'}")
-        _log(f"Reasoning: {reasoning[:200]}...")
-
-        if not approved:
-            _append_history(history, generation, chosen_strategy, "rejected")
-            _save_state(generation, history)
-            time.sleep(evo_cfg.get("delay_between_generations", 5))
-            continue
-
-        # Step 4.5: Validate function signatures
-        _log("Validating function signatures...")
-        if not codemod.validate_changes(current_files, proposed_files):
-            _log("Signature validation FAILED. Skipping generation.")
-            _append_history(history, generation, chosen_strategy, "validation_failed")
-            _save_state(generation, history)
-            time.sleep(evo_cfg.get("delay_between_generations", 5))
-            continue
-
-        # Step 5: Backup current core/
-        backup_path = codemod.backup_current(CORE_DIR, BACKUP_DIR, generation)
-        _log(f"Backup saved to {backup_path}")
-        codemod.cleanup_old_backups(BACKUP_DIR, safety_cfg.get("max_backups", 20))
-
-        # Step 6: Write proposed files to disk
-        try:
-            codemod.write_files(CORE_DIR, proposed_files)
-            _log("Changes written to disk")
-        except Exception as e:
-            _log(f"Write failed: {e}. Rolling back.")
-            codemod.restore_backup(backup_path, CORE_DIR)
-            _append_history(history, generation, chosen_strategy, "write_failed")
-            _save_state(generation, history)
-            continue
-
-        # Step 7: Health check the new code
-        _log("Running health checks...")
-        if not health.run_checks():
-            _log("Health checks FAILED. Rolling back.")
-            codemod.restore_backup(backup_path, CORE_DIR)
-            _append_history(history, generation, chosen_strategy, "health_failed")
-            _save_state(generation, history)
-            continue
-
-        _log("Health checks PASSED")
-
-        # Step 8: Git commit
-        commit_msg = f"gen-{generation}: {chosen_strategy[:60]}"
-        committed = codemod.git_commit(PROJECT_ROOT, commit_msg)
-        if committed:
-            _log(f"Git commit: {commit_msg}")
-        else:
-            _log("Git commit failed (continuing anyway)")
-
-        # Step 9: Save state before hot deploy
-        _append_history(history, generation, chosen_strategy, "deploying")
-        _save_state(generation, history)
-
-        # Step 10: Hot deploy - spawn new process with updated code
-        _log("Initiating hot deploy...")
-        _perform_hot_deploy(
-            generation=generation,
-            backup_path=backup_path,
-            project_root=PROJECT_ROOT,
-            timeout=evo_cfg.get("hot_deploy_timeout", 30),
-            committed=committed,
-        )
-
-        # If we reach here, hot deploy failed and we rolled back
-        _log("Hot deploy failed. Continuing with rolled-back code.")
-        _append_history(history, generation, chosen_strategy, "deploy_failed")
-        _save_state(generation, history)
-        time.sleep(evo_cfg.get("delay_between_generations", 5))
-
-    _log(f"Reached max_generations ({max_generations}). Stopping.")
-    sys.exit(0)
+        _log(f"Reached max_generations ({max_generations}). Stopping.")
+        return
+    finally:
+        brain.close()
 
 
 def _perform_hot_deploy(
     generation: int, backup_path: str, project_root: str, timeout: int,
     committed: bool = False,
-) -> None:
+) -> bool:
     """
     Spawn a new process with the updated code.
-    If successful, exit this process (the new one takes over).
-    If failed, roll back and return.
+    If successful, return True so the caller can exit normally.
+    If failed, roll back and return False.
     """
     # Clean up stale marker
     if os.path.exists(EVOLVE_MARKER):
@@ -193,7 +197,7 @@ def _perform_hot_deploy(
         if os.path.exists(EVOLVE_MARKER):
             os.remove(EVOLVE_MARKER)
             _log(f"[GEN-{generation}] New version is healthy. Exiting old process.")
-            sys.exit(0)
+            return True
         if child.poll() is not None:
             _log(f"Child process exited with code {child.returncode}")
             break
@@ -214,6 +218,7 @@ def _perform_hot_deploy(
     codemod.restore_backup(backup_path, CORE_DIR)
     if committed:
         codemod.git_rollback(project_root)
+    return False
 
 
 def _extract_target_files(strategy: str, all_files: dict[str, str]) -> dict[str, str]:
