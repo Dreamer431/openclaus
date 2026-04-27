@@ -26,7 +26,8 @@ STRATEGIES = [
 def get_strategy(generation: int, history: list) -> str:
     """
     Choose a strategy, preferring those that succeeded recently.
-    Weights strategies by the ratio of successes to failures in recent history.
+    Weights strategies by recent success/failure ratio plus a small
+    exploration bonus for strategies that have not been tried recently.
     Blocks strategies that failed 3+ consecutive times recently.
     Also enforces a cooldown: same strategy cannot be chosen more than 3 consecutive times.
     """
@@ -68,9 +69,25 @@ def get_strategy(generation: int, history: list) -> str:
         # We use (1 + successes) / (1 + failures) to prefer success while
         # penalizing failure, and providing a baseline weight for new strategies.
         weight = (1.0 + successes) / (1.0 + failures)
+        weight += _exploration_bonus(strat, history)
         weights.append(weight)
 
     # Use a local Random instance seeded by generation for deterministic
     # but weighted selection within a single generation run.
     rng = random.Random(generation)
     return rng.choices(available, weights=weights, k=1)[0]
+
+
+def _exploration_bonus(strategy: str, history: list) -> float:
+    """
+    Return a bounded bonus for strategies not tried recently.
+    Kept small so exploration helps variety without overwhelming success data.
+    """
+    if not history:
+        return 0.25
+
+    for distance, entry in enumerate(reversed(history), start=0):
+        if entry["strategy"] == strategy:
+            return min(distance * 0.05, 0.5)
+
+    return 0.5

@@ -177,71 +177,96 @@ def git_rollback(project_root: str) -> bool:
         return False
 
 
+_PATH_RE = r"(core[/\\][\w./\\-]+\.py)"
 _HEADER_PATTERNS = [
-    re.compile(r"###?\s+FILE:\s*(core/[\w./]+\.py)"),
-    re.compile(r"###?\s+(core/[\w./]+\.py)"),
-    re.compile(r"\*\*(core/[\w./]+\.py)\*\*"),
-    re.compile(r"`(core/[\w./]+\.py)`"),
+    re.compile(r"###?\s+FILE:\s*" + _PATH_RE, re.I),
+    re.compile(r"###?\s+" + _PATH_RE, re.I),
+    re.compile(r"---+\s+" + _PATH_RE + r"\s+---+", re.I),
+    re.compile(r"\*\*" + _PATH_RE + r"\*\*", re.I),
+    re.compile(r"`" + _PATH_RE + r"`", re.I),
+    re.compile(r"File:\s*" + _PATH_RE, re.I),
+    re.compile(r"^\s*" + _PATH_RE + r"\s*$", re.I),
 ]
+_ANY_PATH_PATTERN = re.compile(_PATH_RE, re.I)
 
 
-def _parse_with_fence(lines: list[str], open_prefix: str, close_val: str) -> dict[str, str]:
-    """Inner parser for a specific fence style."""
-    result = {}
-    i = 0
+def _extract_file_path(text: str) -> str | None:
+    """Return a normalized core/*.py path from a recognized header."""
+    for pat in _HEADER_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(1).strip().replace("\\", "/")
+    return None
 
-    while i < len(lines):
-        current_file = None
-        for pat in _HEADER_PATTERNS:
-            m = pat.search(lines[i])
-            if m:
-                current_file = m.group(1).strip()
-                break
 
-        if current_file:
-            i += 1
-            while i < len(lines) and not lines[i].lstrip().startswith(open_prefix):
-                i += 1
+def _find_core_path(text: str) -> str | None:
+    """Return any normalized core/*.py path mentioned in text."""
+    m = _ANY_PATH_PATTERN.search(text)
+    return m.group(1).strip().replace("\\", "/") if m else None
 
-            if i >= len(lines):
-                break
 
-            i += 1  # skip opening fence
-            code_lines = []
-
-            while i < len(lines):
-                if lines[i].rstrip() == close_val:
-                    break
-                code_lines.append(lines[i])
-                i += 1
-
-            content = "\n".join(code_lines)
-            if not content.strip():
-                i += 1
-                continue
-
-            try:
-                ast.parse(content)
-                result[current_file] = content
-                print(f"[CODEMOD] Parsed {current_file} ({len(code_lines)} lines)")
-            except SyntaxError as e:
-                print(f"[CODEMOD] Skipping {current_file}: syntax error - {e}")
-
-        i += 1
-
-    return result
+def _looks_like_patch(content: str) -> bool:
+    """Reject diffs; the evolution engine requires complete files."""
+    first = next((line.strip() for line in content.splitlines() if line.strip()), "")
+    return first.startswith(("diff --git", "--- ", "+++ ", "@@"))
 
 
 def parse_gemini_response(response_text: str) -> dict[str, str]:
     """
     Parse Gemini's response into {rel_path: file_contents}.
-    Tries 4-backtick fences first (avoids collision with triple-backtick strings
-    in generated code), then falls back to 3-backtick fences.
+    Handles 3- and 4-backtick fences in one response, several common file
+    header formats, and filenames embedded in the opening fence or first code
+    lines. Invalid Python and patch/diff output are ignored.
     """
     lines = response_text.splitlines()
+    result = {}
+    current_file = None
+    i = 0
+    f4 = chr(96) * 4
+    f3 = chr(96) * 3
 
-    result = _parse_with_fence(lines, open_prefix="````", close_val="````")
-    if result:
-        return result
+    while i < len(lines):
+        path = _extract_file_path(lines[i])
+        if path:
+            current_file = path
 
-    return _parse_with_fence(lines, open_prefix="```", close_val="```")
+        stripped = lines[i].lstrip()
+        marker = f4 if stripped.startswith(f4) else f3 if stripped.startswith(f3) else None
+        if not marker:
+            i += 1
+            continue
+
+        block_file = _find_core_path(lines[i]) or current_file
+        i += 1
+        code_lines = []
+        while i < len(lines):
+            if lines[i].strip() == marker:
+                i += 1
+                break
+            code_lines.append(lines[i])
+            i += 1
+
+        if not block_file:
+            for code_line in code_lines[:5]:
+                block_file = _find_core_path(code_line)
+                if block_file:
+                    break
+
+        content = "\n".join(code_lines)
+        if not block_file or not content.strip():
+            current_file = None
+            continue
+
+        if _looks_like_patch(content):
+            print(f"[CODEMOD] Skipping {block_file}: expected full file, got patch/diff.")
+        else:
+            try:
+                ast.parse(content)
+                result[block_file] = content
+                print(f"[CODEMOD] Parsed {block_file} ({len(code_lines)} lines)")
+            except SyntaxError as e:
+                print(f"[CODEMOD] Skipping {block_file}: syntax error - {e}")
+
+        current_file = None
+
+    return result
