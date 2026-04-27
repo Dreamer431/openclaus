@@ -223,22 +223,51 @@ def _perform_hot_deploy(
 
 def _extract_target_files(strategy: str, all_files: dict[str, str]) -> dict[str, str]:
     """
-    Parse the target file from the strategy string.
-    Returns a dict with the target file's full content and summaries of all other files.
-    Falls back to returning all files if no target is found.
+    Parse target files from the strategy string.
+    Returns full content for directly referenced files, plus files defining
+    public symbols named in the strategy. All other files are summarized.
+    Falls back to returning all files if no useful target is found.
     """
-    m = re.search(r"In (core/[\w.]+\.py)", strategy)
-    if not m or m.group(1) not in all_files:
+    targets = {
+        match.replace("\\", "/")
+        for match in re.findall(r"core/[\w./-]+\.py", strategy)
+        if match.replace("\\", "/") in all_files
+    }
+
+    if not targets:
+        targets.update(_files_for_named_symbols(strategy, all_files))
+
+    if not targets:
         return all_files  # safe fallback
 
-    target = m.group(1)
     result = {}
     for path, content in all_files.items():
-        if path == target:
+        if path in targets:
             result[path] = content
         else:
             result[path] = _summarize_file(content)
     return result
+
+
+def _files_for_named_symbols(strategy: str, all_files: dict[str, str]) -> set[str]:
+    """Return files whose public top-level symbols are mentioned in strategy."""
+    words = set(re.findall(r"\b[A-Za-z_]\w*\b", strategy))
+    if not words:
+        return set()
+
+    matches = set()
+    for path, content in all_files.items():
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if not node.name.startswith("_") and node.name in words:
+                    matches.add(path)
+                    break
+    return matches
 
 
 def _summarize_file(content: str) -> str:
