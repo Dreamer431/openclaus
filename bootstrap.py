@@ -1,128 +1,151 @@
-"""
-bootstrap.py - Immutable launcher for OpenClaus.
-
-DO NOT modify this file - it is the stable foundation that the evolution
-engine can never touch. All evolvable code lives in core/.
+"""Immutable launcher for the trusted OpenClaus runtime.
 
 Usage:
-  python bootstrap.py               # Normal startup
-  python bootstrap.py --dry-run     # Analyze only, no modifications
-  python bootstrap.py --replace <pid>  # Hot deploy: new version replacing old PID
+  python bootstrap.py
+  python bootstrap.py --dry-run
+  python bootstrap.py --replace PID --token TOKEN --generation N
 """
 
+from __future__ import annotations
+
+import argparse
 import os
-import sys
+import shutil
 import subprocess
+import sys
+import time
+from pathlib import Path
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-EVOLVE_MARKER = os.path.join(PROJECT_ROOT, ".evolve_ready")
 
-# Add project root to path so 'core' package is importable
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+PROJECT_ROOT = Path(__file__).resolve().parent
+READY_MARKER = PROJECT_ROOT / ".evolve_ready"
+ACK_MARKER = PROJECT_ROOT / ".evolve_ack"
+ACTIVE_MARKER = PROJECT_ROOT / ".evolve_active"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def load_config() -> dict:
     import yaml
-    config_path = os.path.join(PROJECT_ROOT, "config.yaml")
-    example_path = os.path.join(PROJECT_ROOT, "config.example.yaml")
 
-    if not os.path.exists(config_path):
-        if os.path.exists(example_path):
-            import shutil
+    config_path = PROJECT_ROOT / "config.yaml"
+    example_path = PROJECT_ROOT / "config.example.yaml"
+    if not config_path.exists():
+        if example_path.exists():
             shutil.copy(example_path, config_path)
-            print(f"[BOOTSTRAP] Created config.yaml from config.example.yaml")
-            print(f"[BOOTSTRAP] Please set your API key in config.yaml and restart.")
-            sys.exit(0)
-        else:
-            print("[BOOTSTRAP] ERROR: config.yaml not found. Create it from config.example.yaml.")
-            sys.exit(1)
+            print("[BOOTSTRAP] Created config.yaml from config.example.yaml")
+            print("[BOOTSTRAP] Set the Gemini API key and restart.")
+            raise SystemExit(0)
+        raise SystemExit("[BOOTSTRAP] config.yaml is missing")
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    if cfg.get("gemini", {}).get("api_key", "").startswith("YOUR_"):
-        print("[BOOTSTRAP] ERROR: Please set your Gemini API key in config.yaml.")
-        sys.exit(1)
-
-    return cfg
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    if not isinstance(config, dict):
+        raise SystemExit("[BOOTSTRAP] config.yaml must contain a mapping")
+    api_key = str(config.get("gemini", {}).get("api_key", ""))
+    if not api_key or api_key.startswith("YOUR_"):
+        raise SystemExit("[BOOTSTRAP] Set a valid Gemini API key in config.yaml")
+    return config
 
 
 def ensure_git_repo() -> None:
-    """Initialize git repo on first run if needed."""
-    git_dir = os.path.join(PROJECT_ROOT, ".git")
-    if not os.path.exists(git_dir):
-        print("[BOOTSTRAP] Initializing git repository...")
-        subprocess.run(["git", "init"], cwd=PROJECT_ROOT, check=True, capture_output=True)
-        subprocess.run(["git", "add", "."], cwd=PROJECT_ROOT, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "gen-0: initial code"],
-            cwd=PROJECT_ROOT,
-            check=True,
-            capture_output=True,
-        )
-        print("[BOOTSTRAP] Initial git commit created.")
+    if (PROJECT_ROOT / ".git").exists():
+        return
+    print("[BOOTSTRAP] Initializing git repository...")
+    subprocess.run(["git", "init"], cwd=PROJECT_ROOT, check=True)
+    subprocess.run(["git", "add", "."], cwd=PROJECT_ROOT, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "gen-0: initial code"],
+        cwd=PROJECT_ROOT,
+        check=True,
+    )
 
 
-def run_health_checks() -> bool:
-    """Import core.health and run all health checks."""
+def run_verification() -> bool:
+    from engine.verifier import run_checks
+
+    return run_checks(PROJECT_ROOT).ok
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="OpenClaus trusted launcher")
+    parser.add_argument("--dry-run", action="store_true", help="verify without evolving")
+    parser.add_argument("--replace", type=int, metavar="PID", help=argparse.SUPPRESS)
+    parser.add_argument("--token", help=argparse.SUPPRESS)
+    parser.add_argument("--generation", type=int, help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
+
+
+def replacement_start(parent_pid: int, token: str, generation: int) -> None:
+    from engine.controller import run
+    from engine.runtime import pid_is_alive, read_ready_marker, write_json_atomic
+
+    print(f"[BOOTSTRAP] Validating replacement for generation {generation}")
+    if not run_verification():
+        raise SystemExit("[BOOTSTRAP] Replacement verification failed")
+
+    write_json_atomic(
+        READY_MARKER,
+        {
+            "token": token,
+            "generation": generation,
+            "pid": os.getpid(),
+        },
+    )
+    deadline = time.monotonic() + 30
+    acknowledged = False
+    while pid_is_alive(parent_pid) and time.monotonic() < deadline:
+        ack = read_ready_marker(ACK_MARKER, token, generation)
+        if ack and ack.get("pid") == parent_pid:
+            acknowledged = True
+            break
+        time.sleep(0.1)
+    if not acknowledged:
+        READY_MARKER.unlink(missing_ok=True)
+        raise SystemExit("[BOOTSTRAP] Parent did not acknowledge the handoff")
+
+    write_json_atomic(
+        ACTIVE_MARKER,
+        {"token": token, "generation": generation, "pid": os.getpid()},
+    )
+    deadline = time.monotonic() + 30
+    while pid_is_alive(parent_pid) and time.monotonic() < deadline:
+        time.sleep(0.25)
+    if pid_is_alive(parent_pid):
+        READY_MARKER.unlink(missing_ok=True)
+        raise SystemExit("[BOOTSTRAP] Parent did not exit after handoff")
+
+    config = load_config()
+    run(config)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.replace is not None:
+        if not args.token or args.generation is None or args.generation < 1:
+            raise SystemExit("[BOOTSTRAP] Invalid replacement handshake")
+        if args.dry_run:
+            raise SystemExit("[BOOTSTRAP] --dry-run cannot be combined with --replace")
+        replacement_start(args.replace, args.token, args.generation)
+        return 0
+
+    print("[BOOTSTRAP] OpenClaus trusted runtime starting...")
+    ensure_git_repo()
+    if args.dry_run:
+        ok = run_verification()
+        print(f"[BOOTSTRAP] Verification: {'OK' if ok else 'FAILED'}")
+        return 0 if ok else 1
+
+    from engine.controller import run
+    from engine.runtime import SafetyError
+
     try:
-        from core.health import run_checks
-        return run_checks()
-    except Exception as e:
-        print(f"[BOOTSTRAP] Health check import failed: {e}")
-        return False
-
-
-def main() -> None:
-    dry_run = "--dry-run" in sys.argv
-    is_replacement = "--replace" in sys.argv
-
-    if is_replacement:
-        # We are the NEW version spawned by the old process during hot deploy.
-        parent_pid = int(sys.argv[sys.argv.index("--replace") + 1])
-        print(f"[BOOTSTRAP] Hot deploy mode: replacing process {parent_pid}")
-
-        if not run_health_checks():
-            print("[BOOTSTRAP] Health checks FAILED. New version aborting.")
-            sys.exit(1)
-
-        # Signal success to the parent by writing the marker file
-        print("[BOOTSTRAP] Health checks PASSED. Signaling parent to exit.")
-        with open(EVOLVE_MARKER, "w") as f:
-            f.write("ok")
-
-        # Give parent a moment to see the marker and exit
-        import time
-        time.sleep(2)
-
-        # Now run as the new generation
-        config = load_config()
-        if dry_run:
-            print("[BOOTSTRAP] Dry-run mode: not starting evolution loop.")
-            return
-        from core.evolve import run
-        run(config)
-
-    else:
-        # Normal startup
-        print("[BOOTSTRAP] OpenClaus starting...")
-        try:
-            ensure_git_repo()
-        except Exception as e:
-            print(f"[BOOTSTRAP] Warning: git setup failed: {e}")
-
-        config = load_config()
-
-        if dry_run:
-            print("[BOOTSTRAP] Dry-run mode: running health checks only.")
-            ok = run_health_checks()
-            print(f"[BOOTSTRAP] Health: {'OK' if ok else 'FAILED'}")
-            return
-
-        from core.evolve import run
-        run(config)
+        run(load_config())
+    except SafetyError as exc:
+        print(f"[BOOTSTRAP] SAFETY STOP: {exc}")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

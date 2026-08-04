@@ -1,247 +1,213 @@
 # OpenClaus
 
-> 一个会改写自身代码的AI系统。
+> 一个能改写自身策略代码、但不能改写本轮裁判的 AI 实验系统。
 
-OpenClaus 是一个实验性项目：程序在运行时通过 Gemini API 分析自己的源码，生成改进方案，验证通过后以新进程替换自身——完成一次"进化"。每一代的改动都以 git commit 记录，失败时自动回滚。
+OpenClaus 通过 Gemini 生成策略与提示词改进，使用固定的可信控制器验证候选代码，并在验证通过后提交、启动下一代进程。当前版本的重点不是“修改尽可能多的文件”，而是让每次改动都有明确边界、最终结果和可恢复的 Git 历史。
 
----
+## 当前定位
+
+OpenClaus 是研究原型，不是面向公网或多租户环境的安全沙箱。
+
+它现在提供：
+
+- 固定可信内核和可进化策略的明确分层；
+- 候选写入白名单和路径解析防护；
+- 独立于候选代码的语法、策略安全、契约和测试门禁；
+- `evolve/*` 分支、干净工作区和单实例强制检查；
+- 每代唯一最终结果、分支隔离和原子状态写入；
+- 带随机 token、代数和 PID 的热部署握手；
+- 部署失败使用 `git revert` 保留历史，不再执行 `git reset --hard`。
+
+它暂时不提供操作系统级文件系统或网络隔离。有关边界见“安全说明”。
 
 ## 架构
 
-```
+```text
 openclaus/
-├── bootstrap.py          # 不可变启动器（永不被AI修改）
-├── config.yaml           # 本地配置，含API Key（gitignored）
-├── config.example.yaml   # 配置模板，提交到git
-├── requirements.txt
-│
-├── core/                 # 可进化区域——AI可以改写这里的一切
-│   ├── brain.py          # Gemini API 调用
-│   ├── evolve.py         # 进化主循环
-│   ├── codemod.py        # 文件读写、备份、解析
-│   ├── health.py         # 健康检查
-│   ├── strategy.py       # 进化策略选择
-│   └── prompts.py        # 提示词模板（最值得进化的文件）
-│
-├── backups/              # 每代进化前的自动快照（gitignored）
-└── logs/                 # 进化历史与日志（gitignored）
+├── bootstrap.py              # 固定启动器与替换进程握手
+├── engine/                   # 可信内核，进化引擎禁止写入
+│   ├── controller.py         # 进化状态机与热部署协调
+│   ├── model_client.py       # Gemini 客户端，持有 API 凭据
+│   ├── candidate.py          # 输出解析、白名单写入、备份、签名验证
+│   ├── verifier.py           # 固定验证器
+│   ├── runtime.py            # Git、分支、锁、PID 和握手工具
+│   └── state.py              # 原子、分支级状态
+├── core/                     # 策略层
+│   ├── prompts.py            # 可进化
+│   ├── strategy.py           # 可进化
+│   ├── tests/test_*.py       # 可新增的候选测试
+│   └── brain/codemod/...     # 旧 API 的兼容包装，不可由进化引擎写入
+├── tests/acceptance/         # 固定验收测试，候选代码不可修改
+├── scripts/verify.py         # 完整本地验证入口
+├── backups/                  # 运行时备份，gitignored
+└── logs/                     # 状态和运行记录，gitignored
 ```
 
-**核心边界**：`bootstrap.py`、`config.yaml`、`requirements.txt` 被硬编码保护，AI 的写操作只能发生在 `core/` 目录内。
+可信边界是硬编码白名单。模型输出只能写入：
 
----
-
-## 进化循环
-
-每一代（generation）执行以下步骤：
-
-```
-1. READ      读取 core/ 下所有源文件
-2. STRATEGY  选择本代改进目标（加权随机，偏向成功率高的策略）
-3. GENERATE  Gemini 生成改进代码
-             ├─ 模块化变异：只发送目标文件完整内容，其他文件发送签名摘要
-             └─ 反思机制：附带最近10代历史（策略 + 结果），让AI避免重复失败
-4. REVIEW    Gemini 自我审查（低温度，倾向保守）
-             └─ 拒绝 → 跳过本代
-4.5 VALIDATE 函数签名验证（AST对比，防止AI破坏现有接口）
-             └─ 失败 → 跳过本代
-5. BACKUP    备份当前 core/ 到 backups/
-6. WRITE     将新代码写入磁盘
-7. HEALTH    语法检查 + 模块导入 + API契约验证 + pytest测试（若存在）
-             └─ 失败 → 回滚备份
-8. COMMIT    git commit "gen-N: strategy"
-9. DEPLOY    子进程热部署
-             ├─ 成功 → 旧进程退出，新进程接管
-             └─ 失败 → 回滚代码 + git reset HEAD~1
+```text
+core/prompts.py
+core/strategy.py
+core/tests/test_*.py
 ```
 
----
+即使模型输出包含 `engine/verifier.py`、`core/health.py`、`bootstrap.py` 或路径遍历，解析器和写入器也会拒绝。
 
-## 热部署机制
+## 一代的执行流程
 
-```
-旧进程（PID: 1234）                 新进程（PID: 5678）
-════════════════                    ════════════════
-写入新代码到 core/
-git commit
-启动新进程 --replace 1234
-轮询 .evolve_ready ...              导入新代码
-                                    运行健康检查
-                                    ✓ 通过 → 写入 .evolve_ready
-检测到标记文件
-删除标记
-sys.exit(0) ───────────────────→   继续下一代进化
+```text
+PRECHECK
+  ├─ 必须位于 evolve/* 分支
+  ├─ Git 工作区必须干净
+  └─ 获取单实例锁
+
+READ → STRATEGY → GENERATE → MODEL REVIEW → SIGNATURE VALIDATE
+  → BACKUP → ALLOWLIST WRITE → TRUSTED VERIFY → GIT COMMIT
+  → TOKEN HANDSHAKE → DEPLOYED
 ```
 
-若新进程在30秒内未写入标记（或提前崩溃），旧进程回滚并继续当前代码的进化循环。
+可信验证包括：
 
----
+1. `engine/` 和 `core/` 全部 Python 文件的语法解析；
+2. 策略文件静态规则：只允许 `random`、`collections` 导入，拒绝文件、进程、环境和网络相关入口；
+3. `get_strategy`、`build_improvement_prompt`、`build_review_prompt` 调用契约；
+4. 在清理敏感环境变量后的独立 Python 进程中导入策略模块；
+5. 运行候选测试与候选不可写的 `tests/acceptance/`。
 
-## 快速开始
+候选提交后才会启动替换进程。替换进程必须使用本轮随机 token、generation 和自身 PID 写入就绪标记。部署失败会新增一个 revert commit，保留候选及回滚证据。
 
-**依赖**：Python 3.11+、Git、Gemini API Key
+## 状态模型
 
-```bash
-# 1. 克隆项目
-git clone <repo-url>
-cd openclaus
+`logs/state.json` 使用 schema v2。每个 generation 只保留一个最终 outcome：
 
-# 2. 安装依赖
-pip install -r requirements.txt
-
-# 3. 配置 API Key
-cp config.example.yaml config.yaml
-# 编辑 config.yaml，填入你的 Gemini API Key
-
-# 4. 运行
-python bootstrap.py
+```text
+deployed
+generation_failed
+no_changes
+rejected
+validation_failed
+write_failed
+verification_failed
+commit_failed
+deploy_failed
 ```
 
-首次运行会自动初始化 git 仓库并创建初始 commit。
+`deploying` 不再作为成功记录。历史旧值会在加载时规范化，例如 `deploying`、`success` → `deployed`。
 
-**仅验证环境，不修改代码**：
-```bash
+状态通过临时文件、`fsync` 和 `os.replace` 原子写入。切换分支时，旧状态使用分支名和时间戳归档，避免覆盖。
+
+## 安装
+
+依赖 Python 3.11+ 和 Git。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+Copy-Item config.example.yaml config.yaml
+```
+
+编辑 `config.yaml`，设置 Gemini API Key。密钥文件已被 Git 忽略。
+
+如果使用 pyenv-win，请先选择已安装版本，例如：
+
+```powershell
+pyenv local 3.12.10
+```
+
+## 本地验证
+
+完整门禁：
+
+```powershell
+python scripts\verify.py
+```
+
+也可以只执行可信验证；该命令不读取 API Key，也不会修改源码：
+
+```powershell
 python bootstrap.py --dry-run
 ```
 
----
+当前固定测试会覆盖写入边界、解析、签名保护、策略静态规则、状态迁移、分支保护、单实例锁、带身份的就绪标记以及 Git commit/revert 回滚。
 
-## 分支策略
+## 开启一条进化线
 
-本项目区分两类工作：人工开发种子代码 vs AI进化实验。
+人工开发在 `main` 完成。确认完整验证通过并提交 seed 后，再创建独立进化分支：
 
-```
-main
-│  ← 你在这里开发和改进种子代码
-│  seed-v0.1 (tag)
-│  seed-v0.2 (tag)
-│
-├── evolve/seed-v0.1   ← 从 v0.1 启动的AI进化线
-│   gen-4, gen-5, ...  ← AI自动提交
-│
-└── evolve/seed-v0.2   ← 从 v0.2 启动的AI进化线
-    gen-1, gen-2, ...
-```
-
-**启动新一轮进化**：
-```bash
-# 在 main 上开发完毕，打 tag
-git tag seed-v0.2
-
-# 切出新的进化分支
-git checkout -b evolve/seed-v0.2
-
-# 启动进化
+```powershell
+git switch main
+python scripts\verify.py
+git tag seed-v0.8
+git switch -c evolve/seed-v0.8
 python bootstrap.py
 ```
 
-**将 main 的改动同步到进化分支**：
-```bash
-git checkout evolve/seed-v0.1
-git rebase main
-```
+正常进化在以下情况会直接安全停止：
 
----
+- 当前是 `main`、detached HEAD 或非 `evolve/*` 分支；
+- tracked 或 untracked 工作区不干净；
+- 另一个 OpenClaus 进程持有 `.openclaus.lock`；
+- Git HEAD 在候选生成过程中发生变化。
 
-## 配置说明
+`--dry-run` 不受分支限制，因此可以在 `main` 上执行。
 
-`config.yaml`（从 `config.example.yaml` 复制）：
+## 配置
 
 ```yaml
 gemini:
-  api_key: "YOUR_GEMINI_API_KEY"   # Gemini API Key
-  model: "gemini-2.5-flash"         # 使用的模型
+  api_key: "YOUR_GEMINI_API_KEY"
+  model: "gemini-3-flash-preview"
 
 evolution:
-  max_generations: 50               # 运行代数上限
-  delay_between_generations: 5      # 每代之间的间隔（秒）
-  hot_deploy_timeout: 30            # 等待新进程健康的超时（秒）
+  max_generations: 50
+  delay_between_generations: 5
+  hot_deploy_timeout: 30
+  api_max_retries: 2
 
 safety:
-  max_backups: 20                   # 最多保留多少代备份
-  protected_files:                  # 禁止AI写入的文件
-    - bootstrap.py
-    - config.yaml
-    - requirements.txt
+  max_backups: 20
+  test_timeout: 60
 ```
 
-`config.yaml` 含 API Key，已加入 `.gitignore`，不会被提交。
+429 和常见 5xx 模型错误会进行有限指数退避。无论最终成功或失败，generation 都会持久化，避免重启后重复使用同一代编号。
 
----
+## 设计原则
 
-## 安全边界
+### 候选不能裁判自己
 
-| 保护机制 | 说明 |
-|---|---|
-| 文件写入限制 | `codemod.py` 拒绝写入 `core/` 外的任何路径 |
-| 受保护文件列表 | `bootstrap.py`、`config.yaml`、`requirements.txt` 不可写 |
-| 路径遍历防护 | 包含 `..` 的路径被拒绝 |
-| 语法验证 | 写入前对每个文件执行 `ast.parse()` |
-| 函数签名验证 | `validate_changes()` 用 AST 检查公开函数签名是否保留（私有函数允许重构） |
-| 健康检查门控 | 新代码必须通过导入测试和 API 契约检查才能部署 |
-| 子目录支持 | `core/tests/` 等子目录可被 AI 创建和写入，支持 TDD 策略 |
-| 自动回滚 | 健康检查失败或热部署失败时自动恢复备份并回退 git |
-| eval/exec 检测 | 健康检查扫描禁止的危险构造 |
+候选可以改进提示词、策略和候选测试，但不能修改控制器、最终验证器或固定验收测试。候选测试只能增加信号，不能替代固定门禁。
 
----
+### 部署成功不等于质量提升
 
-## 设计哲学
+`deployed` 只表示固定门禁和进程交接成功。状态同时记录耗时、变更文件、commit 和审查摘要，为后续建立冻结基准与客观 fitness 提供数据。
 
-**种子要小，让 AI 自己长。**
+### Git 历史优先于破坏性回退
 
-本项目遵循以下几条原则，与通常的软件工程实践有所不同：
+运行前必须干净，候选 commit 与失败 revert 都保留。系统不会再使用 `git reset --hard HEAD~1` 隐藏失败候选。
 
-**1. Seed 是起点，不是终点**
-`main` 分支的代码只需要"足够好地启动进化"，不必追求完美。过度手工打磨种子会让每条进化线都从同一个近乎完美的状态出发，减少了多样性和探索空间。
+### Seed 保持小，但可信内核保持固定
 
-**2. 人工干预只修基础设施问题**
-当进化卡住时（如解析器崩溃、API 契约被破坏、策略目标太模糊），才回到 `main` 修复根因。如果 AI 只是做了"无聊但安全"的改动，这是策略设计问题，不是代码问题。
+进化结果如果证明某项可信基础设施值得采用，应由人工审查后合入 `main` 并形成新 seed。在线候选不能直接扩张自身写权限。
 
-**3. 将 AI 的进化成果"回收"到 seed**
-当一条进化线产生了稳定有价值的改动（通过多代验证），可以挑选并合并回 `main`，打新 tag，开启下一轮进化——带着上一代的智慧重新出发。回收标准：让系统更稳定运行，而非仅仅增加功能。
+## 安全说明
 
-**4. 观察优先于控制**
-运行时不要干预。先让 AI 跑几十代，观察失败模式，再针对性地修改策略列表或提示词。每次改动应该针对一个具体的、可验证的根因。
+当前静态策略规则和清理后的子进程环境属于纵深防护，不是 Python 安全沙箱。Python 对象模型允许绕过许多纯 AST 限制；候选测试进程目前也没有操作系统级网络、文件和资源配额。
 
-**5. 策略要具体，不要笼统**
-每条 `STRATEGIES` 应指定**具体文件**和**具体改动**，可通过 diff 验证是否真正执行。笼统的目标（如"improve robustness"）会让 AI 用安全但低价值的改动（加 try/except、加 logging）来敷衍。
+因此：
 
----
+- 只应在专用 `evolve/*` 分支和可恢复的开发机上运行；
+- 不应给进程生产凭据、云管理员权限或敏感目录访问权；
+- 不应把来自不受信任第三方的候选代码当作安全代码运行；
+- 面向无人值守或公网场景前，仍需增加容器/虚拟机隔离、只读挂载、禁网和 CPU/内存/时间限制。
 
-## 进化机制
+## 后续路线
 
-系统内置了五种改善进化质量的机制，均可被 AI 自身继续进化：
-
-**反思机制（Reflection）**：每次生成时，AI 能看到最近 10 代的历史记录（策略文本 + 执行结果），从而避免重复已失败的路径，向已成功的方向靠拢。
-
-**模块化变异（Modular Mutation）**：从策略文本中提取目标文件，只向 AI 发送该文件的完整内容；其他文件压缩为函数签名摘要。目标提取支持 `core/tests/...` 等子目录路径，也会根据策略中提到的公开函数名找到对应模块，让"创建测试"这类新文件策略仍能拿到被测代码的完整上下文。
-
-**测试驱动进化（TDD Scaffold）**：`health.py` 在 `core/tests/` 目录存在时自动运行 pytest。AI 可通过写测试文件这一进化策略逐步构建测试套件，被写入的测试将作为后续所有进化的约束门控。
-
-**探索奖励（Exploration Bonus）**：策略选择在成功率权重之外，会给长期未尝试的策略一个小而有上限的加成，避免进化线被单一高成功率策略吸住。
-
-**Fitness Function（自演化）**：策略列表中包含两条 fitness 相关目标——让 AI 自己设计质量度量标准（记录到 history 的 `fitness` 字段），再用 fitness 数据改进策略选择权重。度量什么、怎么算由 AI 决定，而非人工规定。
-
----
-
-## 已知限制
-
-- **Gemini 输出格式不稳定**：部分模型/提示词组合下，Gemini 不按期望格式返回代码，导致该代跳过。解析器已针对此问题做鲁棒性处理。
-- **策略集中问题**：加权选择可能导致某条高成功率策略被反复选中。已通过"连续 3 次冷却"和有上限的探索奖励缓解。
-- **API 费用**：每代至少消耗 2-3 次 Gemini API 调用（生成 + 审查），高频运行需注意费用。
-- **语义 bug 无法检测**：健康检查只能发现语法错误和导入失败，语义上有问题但能运行的代码会通过检查。
-
----
-
-## 依赖
-
-```
-google-genai>=1.0.0   # Gemini API SDK
-pyyaml>=6.0           # YAML 配置解析
-pytest>=8.0           # 可选测试门控（core/tests/ 存在时由 health.py 运行）
-```
-
----
+1. 在无网络、只读挂载的容器中执行候选测试；
+2. 候选先进入临时 Git worktree，通过后再提升分支引用；
+3. 建立候选不可见的冻结行为基准和 holdout fitness；
+4. 记录模型版本、提示词哈希、token、费用和完整验证报告；
+5. 增加 `status`、`report`、`harvest` 等实验管理命令。
 
 ## 许可
 

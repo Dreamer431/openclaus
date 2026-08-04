@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openclaus"
+version = "0.8.0"
+description = "A self-modifying policy experiment with a trusted controller"
+requires-python = ">=3.11"
+dependencies = [
+  "google-genai>=1.0,<2",
+  "PyYAML>=6,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["core/tests", "tests/acceptance"]
+addopts = "-p no:cacheprovider"
+
+[tool.setuptools.packages.find]
+include = ["core*", "engine*"]
+exclude = ["backups*", "logs*", "tests*"]

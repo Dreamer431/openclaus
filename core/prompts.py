@@ -9,11 +9,13 @@ of the most impactful things the AI can do to improve itself.
 _FENCE = chr(96) * 4  # ````
 
 _OUTCOME_LABELS = {
-    "deploying": "DEPLOYED successfully",
+    "deployed": "DEPLOYED successfully",
+    "generation_failed": "FAILED during model generation or review",
     "rejected": "REJECTED by reviewer",
     "validation_failed": "FAILED signature validation",
-    "health_failed": "FAILED health checks",
+    "verification_failed": "FAILED trusted verification",
     "write_failed": "FAILED to write to disk",
+    "commit_failed": "FAILED to create the candidate commit",
     "deploy_failed": "FAILED hot deploy",
     "no_changes": "produced NO CHANGES",
 }
@@ -57,8 +59,9 @@ Focus your changes on the file(s) with full content shown.
 You may reference summaries to understand interfaces, but do NOT output modified versions of summary-only files.
 """
 
-    return f"""You are an AI that modifies its own source code to improve itself.
-Your current source files are below. Your task for this generation is:
+    return f"""You improve OpenClaus's evolvable policy code. A separate trusted
+controller parses, verifies, commits, and deploys your proposal. Your task for
+this generation is:
 
 STRATEGY: {strategy}
 {history_section}
@@ -77,9 +80,11 @@ RULES:
 - IMPORTANT: Use exactly four backticks (````) to open and close code fences, NOT three
 - Do NOT place a line of four bare backticks inside Python strings; use chr(96)*4 to build the fence string at runtime if needed
 - Output the COMPLETE file contents, not just diffs or patches
-- Do NOT include bootstrap.py, config.yaml, or requirements.txt
-- Preserve the function signature core/evolve.py:run(config) - bootstrap depends on it
-- Preserve the function signature core/health.py:run_checks() - bootstrap depends on it
+- You may modify only core/prompts.py, core/strategy.py, or core/tests/test_*.py
+- Never output engine/, bootstrap.py, config.yaml, requirements.txt, or tests/acceptance/
+- Preserve all existing public function signatures
+- Policy files may import only random or collections
+- Policy files must not perform file, process, environment, or network access
 - Keep changes focused on the stated strategy
 - Ensure all imports are valid Python
 - If a file doesn't need changes, omit it from your response
@@ -99,14 +104,17 @@ Check for:
 1. Syntax errors
 2. Broken imports
 3. Logic errors that could crash the system
-4. Whether core API contracts are preserved:
-   - core/evolve.py must have run(config) callable
-   - core/health.py must have run_checks() callable
+4. Whether policy API contracts are preserved:
+   - core/strategy.py must have get_strategy(generation, history)
+   - core/prompts.py must preserve build_improvement_prompt and build_review_prompt
 5. Strategy alignment: Do the changes DIRECTLY implement the stated strategy?
    REJECT if the changes are mostly unrelated to the strategy (e.g. adding error
    handling or logging when the strategy asks for a different kind of change, or
    adding docstrings when the strategy asks for new functionality). The diff must
    address what the strategy explicitly describes.
+6. Trusted boundary: REJECT any proposal outside core/prompts.py,
+   core/strategy.py, or core/tests/test_*.py, and reject policy code that performs
+   file, process, environment, or network access.
 
 ORIGINAL FILES:
 {original_text}

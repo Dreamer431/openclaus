@@ -1,8 +1,10 @@
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 .env
-.evolve_ready
+.evolve_*
+.openclaus.lock
 logs/
 backups/
 config.yaml

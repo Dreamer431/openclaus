@@ -6,10 +6,8 @@ evolution:
   max_generations: 50  # number of generations to run
   delay_between_generations: 5   # seconds between generations
   hot_deploy_timeout: 30         # seconds to wait for new process
+  api_max_retries: 2             # retry transient 429/5xx model failures
 
 safety:
   max_backups: 20
-  protected_files:
-    - bootstrap.py
-    - config.yaml
-    - requirements.txt
+  test_timeout: 60
